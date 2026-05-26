@@ -34,7 +34,7 @@ def _build_prompt(query: str, ranked: list) -> str:
 
 
 # L2 distance: lower = more similar. Reject if top result is too far (> threshold).
-_DEFAULT_THRESHOLD = 0.8
+_DEFAULT_THRESHOLD = 1.2
 
 
 def query(question: str, score_threshold: float = _DEFAULT_THRESHOLD) -> dict:

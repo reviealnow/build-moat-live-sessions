@@ -27,7 +27,7 @@ def _get_embeddings():
 
 
 def _load_markdown_sections(path: Path) -> list:
-    from langchain.schema import Document
+    from langchain_core.documents import Document
     docs: list[Document] = []
     heading_stack: list[tuple[int, str]] = []
     current_heading = path.stem.replace("_", " ").title()
@@ -67,7 +67,7 @@ def _load_markdown_sections(path: Path) -> list:
 
 def build_index(docs_dir: Path = DOCS_DIR) -> tuple[int, int]:
     global vectorstore, files_indexed, chunks_indexed
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.vectorstores import FAISS
 
     markdown_files = sorted(docs_dir.glob("*.md"))
