@@ -1,0 +1,82 @@
+Task Scheduler MCP Server — Learning Points
+Date: 2026-05-13
+================================================================================
+
+## 1. MCP Inspector 連線失敗：SSE CORS 問題（Safari）
+
+問題：
+  npx @modelcontextprotocol/inspector 啟動後，瀏覽器顯示
+  "Fetch API cannot load http://localhost:3001/sse due to access control checks"
+
+根本原因：
+  新版 MCP Inspector 架構分兩個 port：
+    - UI 跑在 localhost:5173
+    - SSE proxy 跑在 localhost:3001
+  Safari 把 localhost:5173 → localhost:3001 視為跨域請求（cross-origin），
+  預設拒絕。Chrome / Firefox 對 localhost 跨域不做限制。
+
+解法：
+  A. 用 Chrome 開 Inspector 的 URL（最快）
+  B. 鎖定舊版：npx @modelcontextprotocol/inspector@0.6.0（單一 port，Safari OK）
+
+--------------------------------------------------------------------------------
+
+## 2. Claude Desktop 無法啟動 MCP Server：ModuleNotFoundError
+
+問題：
+  config.json 加了 "cwd" 欄位，但 Claude Desktop 啟動 subprocess 時完全忽略，
+  導致 python -m app.mcp_server 找不到 app 套件。
+
+  錯誤訊息：
+  ModuleNotFoundError: No module named 'app'
+
+根本原因：
+  Claude Desktop 的 mcpServers 設定雖然接受 "cwd"，但實際上不會把它傳給
+  子 process，subprocess 的工作目錄是 Claude Desktop 自己決定的。
+
+解法：
+  建立 run_server.py 在專案根目錄，腳本內用絕對路徑主動設定 sys.path：
+
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+  config.json 改為直接指向這個腳本（絕對路徑），不再用 -m 模組方式執行：
+
+    "command": "/path/to/.venv/bin/python",
+    "args": ["/path/to/run_server.py"]
+
+--------------------------------------------------------------------------------
+
+## 3. Claude Desktop 拒絕帶點號的 Tool 名稱
+
+問題：
+  MCP Inspector 測試時 task.create / task.list 等工具名稱完全正常，
+  但接上 Claude Desktop 後出現驗證錯誤：
+
+  tools.16.FrontendRemoteMcpToolDefinition.name:
+    String should match pattern '^[a-zA-Z0-9_-]{1,64}$'
+
+根本原因：
+  MCP 協議本身允許點號（dot）在 tool name 裡，
+  但 Claude Desktop 前端有額外的名稱驗證，只接受 [a-zA-Z0-9_-]。
+
+解法：
+  把 task.create → task_create（底線取代點號），其餘同理。
+
+補充說明：
+  PROMPT.md 建議用點號 namespace（task.create）的原因是：
+  對 LLM tool selection 有幫助——namespace 讓 model 更容易理解工具分類。
+  但這是 MCP 協議層的「最佳實踐」，不代表所有 MCP client 都支援。
+  Claude Desktop 相容的做法是用底線（task_create），
+  LLM 同樣能從命名推斷語意，只是少了點號的視覺分層。
+
+--------------------------------------------------------------------------------
+
+## 總結：Challenge Track 完整流程
+
+1. 建立 app/ 套件（db.py, scheduler.py, watcher.py, worker.py, mcp_server.py）
+2. MCP Inspector 驗證：用 Chrome，或鎖定 @0.6.0 版
+3. Claude Desktop 整合：
+   - 用 run_server.py 處理路徑問題（不依賴 cwd）
+   - Tool name 只用 [a-zA-Z0-9_-]，不用點號
+================================================================================

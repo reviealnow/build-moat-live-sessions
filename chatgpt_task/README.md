@@ -1,53 +1,101 @@
-# ChatGPT Task Scheduler — Exercise
+# ChatGPT Task Scheduler — MCP Server
 
-## How to Use
+A real **MCP (Model Context Protocol)** stdio server that lets Claude — or any MCP client — schedule and manage tasks via standardized tool calls. Built as the Challenge Track implementation for the Build Moat Week 3 exercise.
 
-1. Read `PROMPT.md`
-2. Answer the Design Questions (write your answers directly in `PROMPT.md`)
-3. Build the prototype:
-   - **Challenge Track:** Build from scratch using `PROMPT.md` as your spec
-   - **Guided Track:** Go to `scaffold/`, fill in the TODOs
-4. Verify with the MCP inspector tests at the bottom of `PROMPT.md`
-5. Bring your Design Questions answers to live session for discussion
+## Key Design Decisions
 
-## Choose Your Track
+1. **Watcher + Queue + Worker** — Decoupled architecture: watcher scans DB for due jobs → pushes to asyncio queue → worker executes independently (in-memory queue simulates SQS)
+2. **Time Bucket Partitioning** — Jobs are partitioned by hour (`YYYY-MM-DD-HH`), so the watcher only scans the current-hour slice (avoids full table scans at 1M+ jobs)
+3. **MCP Tool Registry Pattern** — `TOOL_REGISTRY` dict routes tool calls to handlers (avoids if-else anti-pattern when adding new tools)
+4. **Underscore Naming** — `task_create`, `task_status` instead of `task.create` (dots are valid in MCP protocol but rejected by Claude Desktop frontend)
 
-**Challenge Track** — You decide the architecture, file structure, and implementation. Any language with an MCP SDK works (Python + the official `mcp` SDK recommended). Read `PROMPT.md` to get started.
+## MCP Tools
 
-**Guided Track** — File structure and boilerplate are provided. Fill in the core logic marked with `TODO`. Go to `scaffold/` and follow the instructions below.
+| Tool | Description |
+|---|---|
+| `task_create` | Schedule a new task for future execution |
+| `task_list` | List all scheduled tasks |
+| `task_status` | Get the status of a scheduled task |
+| `task_cancel` | Cancel a pending or running task |
 
-## Guided Track Setup
+## Project Structure
+
+```
+chatgpt_task/
+├── app/                         # Challenge track implementation
+│   ├── mcp_server.py            # MCP entry point + tool registry
+│   ├── scheduler.py             # CRUD + time bucket scan logic
+│   ├── watcher.py               # Async watcher (scans DB every 1s)
+│   ├── worker.py                # Async worker (executes jobs from queue)
+│   └── db.py                   # SQLAlchemy models + SQLite connection
+├── answers/                     # Reference implementation + setup guide
+├── scaffold/                    # Guided track (fill-in-the-TODO version)
+├── run_server.py                # Entry point (handles sys.path for Claude Desktop)
+├── requirements.txt
+├── PROMPT.md                    # Exercise spec + design questions
+└── learningpoints_TaskScheduler.txt  # Debugging notes from integration
+```
+
+## Setup
 
 ```bash
-cd scaffold
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-You also need **Node.js** for `npx` (used by the MCP inspector for verification).
-
-### Files to Fill In
-
-| File | TODO | Design Decision |
-|------|------|-----------------|
-| `app/scheduler.py` | `get_time_bucket()` + `find_due_jobs()` | Time bucket partitioning for efficient job scanning |
-| `app/mcp_server.py` | `TOOL_REGISTRY` + `route_tool_call()` | Registry pattern for MCP tool routing |
-
-### Run and Verify
-
-The prototype is a real MCP stdio server. Verify with the MCP inspector (no Claude needed):
+## Verify with MCP Inspector
 
 ```bash
 npx @modelcontextprotocol/inspector python -m app.mcp_server
 ```
 
-This opens a browser GUI — see `PROMPT.md` Verification section for the full test flow. Once the inspector tests pass, you can optionally connect to Claude Desktop / Claude Code (instructions also in `PROMPT.md`).
+Opens a browser GUI (use **Chrome** — Safari blocks localhost cross-origin SSE). Steps:
 
-## Bonus Challenges
+1. Click **Connect** → 4 tools should appear
+2. **task_create** → `description="test"`, `scheduled_at="2025-01-01T00:00:00"` → Run Tool → get `job_id`
+3. Wait ~10s → **task_status** → `job_id: 1` → status should be `"completed"`
+4. **task_create** with future time → **task_cancel** → status `"cancelled"`
+5. **task_list** → see all jobs
 
-- Connect a real LLM to parse natural language task descriptions before calling `task.create`
+## Connect to Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "task-scheduler": {
+      "command": "/absolute/path/to/chatgpt_task/.venv/bin/python",
+      "args": ["/absolute/path/to/chatgpt_task/run_server.py"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop fully. The 🔨 icon in the chat input should show 4 tools.
+
+> **Note:** Use `run_server.py` (not `-m app.mcp_server`) — Claude Desktop ignores the `cwd` field, so the script sets `sys.path` explicitly via absolute path.
+
+## Connect to Claude Code
+
+```bash
+claude mcp add task-scheduler /absolute/path/to/.venv/bin/python /absolute/path/to/run_server.py
+```
+
+## Tech Stack
+
+| Layer | Library |
+|---|---|
+| MCP framework | `mcp>=1.0.0` |
+| ORM | SQLAlchemy 2.x |
+| Database | SQLite |
+| Async runtime | asyncio (stdlib) |
+
+## Bonus Challenges (from PROMPT.md)
+
+- Connect a real LLM to parse natural language task descriptions before `task_create`
 - Add recurring job support (cron expressions)
-- Add job chaining (Job A completes -> triggers Job B)
-- Add MCP `resources` support (e.g., expose job details as readable resources)
-- Add MCP `prompts` support (e.g., a `daily_review` prompt template)
+- Add job chaining (Job A completes → triggers Job B)
+- Expose job details as MCP `resources`
+- Add a `daily_review` prompt template via MCP `prompts`
