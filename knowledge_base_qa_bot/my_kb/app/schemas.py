@@ -27,6 +27,7 @@ class ChatResponse(BaseModel):
     threshold_applied: bool = False
     session_id: str
     strategy: str = "bm25"
+    rewritten_query: str | None = None
 
 
 class CompareResult(BaseModel):
@@ -34,9 +35,12 @@ class CompareResult(BaseModel):
     sources: list[SourceInfo]
     threshold_applied: bool = False
     strategy: str
+    rewritten_query: str | None = None
 
 
 class CompareResponse(BaseModel):
     query: str
     bm25: CompareResult
     vector: CompareResult
+    hybrid: CompareResult | None = None
+    hybrid_rewrite: CompareResult | None = None

@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from .indexer import build_index as bm25_build_index
 from . import indexer_vector
 from .retrieval import query as bm25_query, query_stream
-from . import retrieval_vector
+from . import retrieval_vector, retrieval_hybrid
 from .schemas import (
     ChatRequest, ChatResponse, CompareResponse, CompareResult, IndexResponse
 )
@@ -41,6 +41,25 @@ def chat(req: ChatRequest):
             session_id=str(uuid.uuid4()),
             strategy="vector",
         )
+    if req.strategy == "hybrid":
+        result = retrieval_hybrid.query(req.query, session_id=req.session_id)
+        return ChatResponse(
+            answer=result["answer"],
+            sources=result["sources"],
+            threshold_applied=result["threshold_applied"],
+            session_id=result["session_id"],
+            strategy="hybrid",
+        )
+    if req.strategy == "hybrid+rewrite":
+        result = retrieval_hybrid.query(req.query, session_id=req.session_id, use_rewrite=True)
+        return ChatResponse(
+            answer=result["answer"],
+            sources=result["sources"],
+            threshold_applied=result["threshold_applied"],
+            session_id=result["session_id"],
+            strategy="hybrid+rewrite",
+            rewritten_query=result.get("rewritten_query"),
+        )
     return bm25_query(req.query, score_threshold=req.score_threshold, session_id=req.session_id)
 
 
@@ -57,6 +76,8 @@ def chat_stream(req: ChatRequest):
 def compare(req: ChatRequest):
     bm25_result = bm25_query(req.query, score_threshold=req.score_threshold)
     vector_result = retrieval_vector.query(req.query)
+    hybrid_result = retrieval_hybrid.query(req.query)
+    hybrid_rw_result = retrieval_hybrid.query(req.query, use_rewrite=True)
 
     return CompareResponse(
         query=req.query,
@@ -71,5 +92,18 @@ def compare(req: ChatRequest):
             sources=vector_result.get("sources", []),
             threshold_applied=vector_result.get("threshold_applied", False),
             strategy="vector",
+        ),
+        hybrid=CompareResult(
+            answer=hybrid_result["answer"],
+            sources=hybrid_result.get("sources", []),
+            threshold_applied=hybrid_result.get("threshold_applied", False),
+            strategy="hybrid",
+        ),
+        hybrid_rewrite=CompareResult(
+            answer=hybrid_rw_result["answer"],
+            sources=hybrid_rw_result.get("sources", []),
+            threshold_applied=hybrid_rw_result.get("threshold_applied", False),
+            strategy="hybrid+rewrite",
+            rewritten_query=hybrid_rw_result.get("rewritten_query"),
         ),
     )
