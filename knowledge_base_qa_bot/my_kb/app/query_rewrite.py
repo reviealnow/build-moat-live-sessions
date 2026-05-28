@@ -24,6 +24,9 @@ Rules:
     not returnable / cannot return → non-refundable
     how long does shipping take   → shipping timeline
     how many days / how long      → processing time
+- ALWAYS preserve timing and condition modifiers — they are semantically critical:
+    after delivery, before shipment, within 24 hours, within N days, already shipped, etc.
+    Do NOT drop these phrases even when trimming filler words.
 - Strip filler words; keep only the semantic core.
 - Return ONLY the rewritten query string — no quotes, no explanation."""
 
