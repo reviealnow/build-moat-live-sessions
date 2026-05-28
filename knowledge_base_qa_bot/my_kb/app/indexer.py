@@ -16,6 +16,22 @@ STOP_WORDS = {
     "how", "i", "is", "it", "my", "of", "the", "to", "what", "when", "which",
 }
 
+SYNONYMS: dict[str, list[str]] = {
+    "revoke": ["cancel", "cancellation"],
+    "money": ["refund"],
+    "back": ["refund", "return"],
+    "returned": ["refundable", "return", "cancel"],
+    "cannot": ["non", "not"],
+}
+
+
+def expand_query(tokens: list[str]) -> list[str]:
+    expanded = []
+    for t in tokens:
+        expanded.append(t)
+        expanded.extend(SYNONYMS.get(t, []))
+    return expanded
+
 
 @dataclass
 class Section:
@@ -174,7 +190,7 @@ def bm25_score(query_tokens: list[str], section: Section, k1: float = 1.5, b: fl
 
 
 def search(query: str, k: int = 3) -> list[tuple[Section, float]]:
-    query_tokens = tokenize(query)
+    query_tokens = expand_query(tokenize(query))
     ranked = [(s, bm25_score(query_tokens, s)) for s in sections]
     ranked.sort(key=lambda x: x[1], reverse=True)
     return [(s, score) for s, score in ranked[:k] if score > 0]
