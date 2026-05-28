@@ -17,13 +17,23 @@ Answer these before you start coding:
 
 1. **Static vs Dynamic QR Code:** Why does this system use dynamic QR codes (encode short URL) instead of static (encode original URL directly)? When would you choose static instead?
 
+   **Answer:** Dynamic QR codes encode a short URL (e.g. `https://yourapp.com/r/abc123`) that points back to our server, so the actual destination lives in the database and can be changed, disabled, or tracked at any time — without reprinting the QR code. Static QR codes encode the final URL directly into the image, so they cannot be updated after printing. Choose static when the destination is permanent, analytics are not needed, and the device scanning it may be offline (e.g. Wi-Fi password on a router sticker).
+
 2. **Token Generation:** How will you generate short URL tokens? What happens when two different URLs produce the same token? How does collision probability change as the number of tokens grows?
+
+   **Answer:** We use SHA-256 hash of `(url + time_ns nonce)` encoded in Base62, truncated to 7 characters (62^7 ≈ 3.5 trillion combinations). On each attempt we check the database for a collision; if one is found we vary the nonce and retry (up to 10 times). Collision probability follows the birthday paradox: negligible at 1M tokens (~0.09%), but starts to matter around 100M tokens — at that point we'd extend the token length from 7 to 8 characters.
 
 3. **Redirect Strategy:** Why 302 (temporary) instead of 301 (permanent)? What are the trade-offs for analytics, URL modification, and latency?
 
+   **Answer:** 302 tells browsers and proxies not to cache the redirect, so every scan hits our server — enabling accurate analytics counts and allowing the destination URL to be changed at any time. 301 (permanent) causes browsers to cache the redirect locally, which means subsequent scans bypass our server entirely: analytics break, and even if we update the destination in the database the old cached URL is still used. The trade-off is one extra network round-trip per scan, which is acceptable for a dynamic system.
+
 4. **URL Normalization:** What normalization rules do you need? Why is `http://Example.com/` and `https://example.com` potentially the same URL?
 
+   **Answer:** `http://Example.com/` and `https://example.com` are functionally identical because hostnames are case-insensitive and the trailing slash on a root path is redundant. Our normalization rules: (1) upgrade scheme to `https`, (2) lowercase the hostname, (3) remove default ports (`:80`, `:443`), (4) strip trailing slash from root path. We also block `javascript:` / `data:` schemes and private IP ranges (SSRF prevention). Without normalization, the same destination would create multiple tokens.
+
 5. **Error Semantics:** What should happen when someone scans a deleted link vs a non-existent link? Should the HTTP status codes be different?
+
+   **Answer:** Yes, they must be different. `410 Gone` means the resource existed but has been permanently removed — used for soft-deleted or expired QR codes. `404 Not Found` means the token never existed — used when someone scans a random or mistyped token. The distinction matters for search engines (410 signals "remove from index"; 404 means "try again later"), for API clients deciding whether to retry, and for end-user experience ("this link was deactivated" vs "this link doesn't exist").
 
 ## Verification
 

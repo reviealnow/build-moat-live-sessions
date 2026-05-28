@@ -3,11 +3,12 @@ from datetime import datetime
 
 import qrcode
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .database import get_db
+from .limiter import limiter
 from .models import ScanEvent, UrlMapping
 from .schemas import CreateRequest, CreateResponse, QRInfoResponse, UpdateRequest
 from .token_gen import generate_token
@@ -21,8 +22,105 @@ redirect_cache: dict[str, str] = {}
 BASE_URL = "http://localhost:8000"
 
 
+@router.get("/", response_class=HTMLResponse)
+def index():
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QR Code Generator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding: 48px 16px; }
+    .card { background: white; border-radius: 12px; padding: 36px; width: 100%; max-width: 480px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    h1 { font-size: 1.4rem; margin-bottom: 24px; color: #111; }
+    label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 6px; margin-top: 16px; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95rem; outline: none; }
+    input:focus { border-color: #4f46e5; }
+    button { margin-top: 20px; width: 100%; padding: 11px; background: #4f46e5; color: white; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; }
+    button:hover { background: #4338ca; }
+    button:disabled { background: #a5b4fc; cursor: not-allowed; }
+    #result { margin-top: 28px; text-align: center; display: none; }
+    #result img { width: 200px; height: 200px; border: 1px solid #eee; border-radius: 8px; }
+    .meta { margin-top: 14px; font-size: 0.88rem; color: #444; text-align: left; background: #f9f9f9; border-radius: 8px; padding: 12px 14px; }
+    .meta a { color: #4f46e5; word-break: break-all; }
+    .meta span { font-weight: 600; }
+    #error { margin-top: 16px; color: #dc2626; font-size: 0.88rem; background: #fef2f2; border-radius: 8px; padding: 10px 12px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>QR Code Generator</h1>
+    <form id="form">
+      <label for="url">URL</label>
+      <input type="url" id="url" placeholder="https://example.com" required>
+      <label for="expires_at">Expiration (optional)</label>
+      <input type="datetime-local" id="expires_at">
+      <button type="submit" id="btn">Generate QR Code</button>
+    </form>
+    <div id="error"></div>
+    <div id="result">
+      <img id="qr-img" alt="QR Code">
+      <div class="meta">
+        <div>Short URL: <a id="short-url" target="_blank"></a></div>
+        <div style="margin-top:6px">Token: <span id="token"></span></div>
+        <div style="margin-top:6px">Original: <span id="original-url"></span></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const form = document.getElementById('form');
+    const btn = document.getElementById('btn');
+    const resultDiv = document.getElementById('result');
+    const errorDiv = document.getElementById('error');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+      errorDiv.style.display = 'none';
+      resultDiv.style.display = 'none';
+
+      const body = { url: document.getElementById('url').value };
+      const exp = document.getElementById('expires_at').value;
+      if (exp) body.expires_at = new Date(exp).toISOString();
+
+      try {
+        const resp = await fetch('/api/qr/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          errorDiv.textContent = data.detail || 'Something went wrong';
+          errorDiv.style.display = 'block';
+        } else {
+          document.getElementById('qr-img').src = data.qr_code_url;
+          const link = document.getElementById('short-url');
+          link.href = data.short_url;
+          link.textContent = data.short_url;
+          document.getElementById('token').textContent = data.token;
+          document.getElementById('original-url').textContent = data.original_url;
+          resultDiv.style.display = 'block';
+        }
+      } catch (err) {
+        errorDiv.textContent = 'Network error: ' + err.message;
+        errorDiv.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate QR Code';
+      }
+    });
+  </script>
+</body>
+</html>"""
+
+
 @router.post("/api/qr/create", response_model=CreateResponse)
-def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def create_qr(req: CreateRequest, request: Request, db: Session = Depends(get_db)):
     try:                                                                                                                                                           
         normalized_url = validate_url(req.url)                
     except ValueError as e:                                                                                                                                        
@@ -39,8 +137,9 @@ def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
 
     short_url = f"{BASE_URL}/r/{token}"
 
-    # Warm cache
-    redirect_cache[token] = normalized_url
+    # Only cache tokens with no expiry — expiring tokens must always hit DB for the 410 check
+    if req.expires_at is None:
+        redirect_cache[token] = normalized_url
 
     return CreateResponse(
         token=token,
@@ -53,18 +152,27 @@ def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
 @router.get("/r/{token}")
 def redirect(token: str, request: Request, db: Session = Depends(get_db)):
     """Redirect fallback flow: Cache -> DB -> 404/410 (from slides mermaid diagram)"""
-    # TODO: Implement this function
-    #
-    # Design decision: the redirect path is the hottest path in the system, so
-    # we use a cache-first strategy (Cache -> DB -> 404/410) to minimize DB load
-    # while still handling soft-deleted and expired links.
-    #
-    # Hints:
-    # 1. Check redirect_cache first — on hit, call _record_scan() and return
-    #    RedirectResponse(status_code=302).
-    # 2. On miss, query the DB: raise 404 if not found, 410 if is_deleted or
-    #    past expires_at; otherwise warm the cache, _record_scan(), and 302.
-    raise NotImplementedError("redirect() is not yet implemented")
+    # Cache hit
+    if token in redirect_cache:
+        _record_scan(token, request, db)
+        return RedirectResponse(url=redirect_cache[token], status_code=302)
+
+    # Cache miss — query DB
+    mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
+
+    if mapping is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if mapping.is_deleted or (
+        mapping.expires_at is not None and mapping.expires_at < datetime.utcnow()
+    ):
+        raise HTTPException(status_code=410, detail="Gone")
+
+    # Warm cache only if no expiry
+    if mapping.expires_at is None:
+        redirect_cache[token] = mapping.original_url
+    _record_scan(token, request, db)
+    return RedirectResponse(url=mapping.original_url, status_code=302)
 
 
 @router.get("/api/qr/{token}", response_model=QRInfoResponse)
